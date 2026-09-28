@@ -634,6 +634,19 @@ pub fn get_mcode_state_db_path() -> PathBuf {
         .unwrap_or_else(|| PathBuf::from("runtime-state.sqlite"))
 }
 
+pub fn get_hermes_dir() -> PathBuf {
+    crate::paths::env_path("HERMES_DIR")
+        .or_else(|| dirs::home_dir().map(|home| home.join(".hermes")))
+        .unwrap_or_else(|| PathBuf::from(".hermes"))
+}
+
+/// Independent of HERMES_DIR, like the MiniMax Code runtime ledger path.
+pub fn get_hermes_state_db_path() -> PathBuf {
+    crate::paths::env_path("HERMES_STATE_DB")
+        .or_else(|| dirs::home_dir().map(|home| home.join(".hermes").join("state.db")))
+        .unwrap_or_else(|| PathBuf::from(".hermes/state.db"))
+}
+
 fn move_file_with_copy_fallback(source: &Path, destination: &Path) -> Result<(), String> {
     if let Err(rename_error) = fs::rename(source, destination) {
         let copied = fs::copy(source, destination).map_err(|copy_error| {
@@ -707,7 +720,7 @@ pub fn init_db(conn: &Connection) -> Result<(), String> {
     conn.execute(
         "CREATE TABLE IF NOT EXISTS usage_entries (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
-            assistant_type TEXT NOT NULL, -- 'antigravity', 'copilot', 'codex', 'claude', 'cursor', 'grok', 'pi', 'omp', 'muse', 'mcode'
+            assistant_type TEXT NOT NULL, -- 'antigravity', 'copilot', 'codex', 'claude', 'cursor', 'grok', 'pi', 'omp', 'muse', 'mcode', 'hermes'
             timestamp TEXT NOT NULL,
             date TEXT NOT NULL,
             session_id TEXT NOT NULL,
@@ -5128,6 +5141,73 @@ pub(crate) fn sync_mcode_usage_logs(conn: &mut Connection, mcode_dir: &Path) -> 
     Ok(())
 }
 
+/// Import cumulative per-model Hermes rows, replacing only Hermes data in one
+/// transaction. A read-only source snapshot keeps its fingerprint consistent.
+pub(crate) fn sync_hermes_usage_logs(
+    conn: &mut Connection,
+    hermes_state_db: &Path,
+) -> Result<(), String> {
+    let Some(source) =
+        crate::hermes::open_state_db(hermes_state_db, &["sessions", "session_model_usage"])?
+    else {
+        return Ok(());
+    };
+    source
+        .execute_batch("BEGIN")
+        .map_err(|error| format!("建立 Hermes Agent 唯讀快照失敗: {error}"))?;
+    let fingerprint = crate::hermes::usage_fingerprint(&source)?;
+    // sync_state is not STRICT: the integer-affinity column stores this
+    // non-numeric three-part fingerprint as TEXT without a schema migration.
+    let previous: Option<String> = conn
+        .query_row(
+            "SELECT CAST(last_synced_size AS TEXT) FROM sync_state WHERE filename = 'hermes:state'",
+            [],
+            |row| row.get(0),
+        )
+        .optional()
+        .map_err(|error| format!("讀取 Hermes Agent 同步狀態失敗: {error}"))?;
+    if previous.as_deref() == Some(fingerprint.as_str()) {
+        return Ok(());
+    }
+    let source_path = hermes_state_db
+        .canonicalize()
+        .map_err(|error| format!("解析 Hermes Agent 資料庫路徑失敗: {error}"))?;
+    let entries = crate::hermes::read_usage_entries(&source, &source_path)?;
+    let tx = conn
+        .transaction()
+        .map_err(|error| format!("Hermes Agent transaction BEGIN 失敗: {error}"))?;
+    tx.execute(
+        "DELETE FROM usage_entries WHERE assistant_type = 'hermes'",
+        [],
+    )
+    .map_err(|error| format!("清除舊 Hermes Agent 用量失敗: {error}"))?;
+    insert_usage_entries(&tx, "hermes", "Hermes Agent", &entries)?;
+    for entry in entries
+        .iter()
+        .filter(|entry| entry.parent_session_id.is_some())
+    {
+        tx.execute(
+            "UPDATE usage_entries SET parent_session_id = ?1
+             WHERE assistant_type = 'hermes' AND session_id = ?2 AND turn_no = ?3",
+            params![entry.parent_session_id, entry.session_id, entry.turn_no],
+        )
+        .map_err(|error| format!("寫入 Hermes Agent 父會話資訊失敗: {error}"))?;
+    }
+    let now = SystemTime::now()
+        .duration_since(SystemTime::UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_secs() as i64;
+    tx.execute(
+        "INSERT OR REPLACE INTO sync_state (filename, last_synced_size, last_synced_time)
+         VALUES ('hermes:state', ?1, ?2)",
+        params![fingerprint, now],
+    )
+    .map_err(|error| format!("更新 Hermes Agent 同步狀態失敗: {error}"))?;
+    tx.commit()
+        .map_err(|error| format!("提交 Hermes Agent transaction 失敗: {error}"))?;
+    Ok(())
+}
+
 /// Unified sync function triggering sync for all supported assistants
 pub fn sync_usage_logs(conn: &mut Connection) -> Result<(), String> {
     // 1. Sync Cursor metadata first so model and mode attribution is available
@@ -5212,6 +5292,10 @@ pub fn sync_usage_logs(conn: &mut Connection) -> Result<(), String> {
     let mcode_dir = get_mcode_dir();
     if let Err(e) = sync_mcode_usage_logs(conn, &mcode_dir) {
         eprintln!("❌ 同步 MiniMax Code 失敗: {}", e);
+    }
+    // 13. Sync Hermes Agent's read-only session ledger.
+    if let Err(e) = sync_hermes_usage_logs(conn, &get_hermes_state_db_path()) {
+        eprintln!("❌ 同步 Hermes Agent 失敗: {}", e);
     }
     Ok(())
 }
@@ -18241,5 +18325,214 @@ mod tests {
         );
 
         let _ = fs::remove_dir_all(root);
+    }
+}
+
+#[cfg(test)]
+mod hermes_sync_tests {
+    use super::*;
+    use std::sync::atomic::{AtomicU64, Ordering};
+
+    static NEXT: AtomicU64 = AtomicU64::new(0);
+
+    fn source() -> (PathBuf, Connection) {
+        let path = std::env::temp_dir().join(format!(
+            "tu-hermes-db-sync-{}-{}.db",
+            std::process::id(),
+            NEXT.fetch_add(1, Ordering::Relaxed)
+        ));
+        let conn = Connection::open(&path).unwrap();
+        conn.execute_batch(
+            "CREATE TABLE sessions (id TEXT PRIMARY KEY, title TEXT, cwd TEXT,
+               parent_session_id TEXT, model TEXT);
+             CREATE TABLE session_model_usage (session_id TEXT, model TEXT,
+               billing_provider TEXT, billing_base_url TEXT, billing_mode TEXT,
+               task TEXT, api_call_count INTEGER, input_tokens INTEGER, output_tokens INTEGER,
+               cache_read_tokens INTEGER, cache_write_tokens INTEGER,
+               reasoning_tokens INTEGER, estimated_cost_usd REAL,
+               actual_cost_usd REAL, cost_status TEXT, first_seen REAL, last_seen REAL);",
+        )
+        .unwrap();
+        (path, conn)
+    }
+
+    fn add_row(source: &Connection, id: &str, model: &str, input: i64) {
+        source
+            .execute(
+                "INSERT OR IGNORE INTO sessions(id, title, cwd, parent_session_id, model)
+             VALUES (?1, 'title', '/project', 'parent', ?2)",
+                params![id, model],
+            )
+            .unwrap();
+        source
+            .execute(
+                "INSERT INTO session_model_usage(session_id, model, billing_provider,
+             billing_base_url, billing_mode, task, api_call_count, input_tokens, output_tokens,
+             cache_read_tokens, cache_write_tokens, reasoning_tokens, last_seen)
+             VALUES (?1, ?2, 'zai', '', 'api', '', 7, ?3, 2, 3, 4, 5, 1789830965.412)",
+                params![id, model, input],
+            )
+            .unwrap();
+    }
+
+    fn target() -> Connection {
+        let conn = Connection::open_in_memory().unwrap();
+        init_db(&conn).unwrap();
+        conn
+    }
+
+    #[test]
+    fn sync_hermes_rebuilds_on_token_change_and_is_idempotent_when_unchanged() {
+        let (path, source) = source();
+        let mut dest = target();
+        add_row(&source, "s1", "glm-5.3", 10);
+        sync_hermes_usage_logs(&mut dest, &path).unwrap();
+        let old_id: i64 = dest
+            .query_row(
+                "SELECT id FROM usage_entries WHERE assistant_type = 'hermes'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        sync_hermes_usage_logs(&mut dest, &path).unwrap();
+        let unchanged_id: i64 = dest
+            .query_row(
+                "SELECT id FROM usage_entries WHERE assistant_type = 'hermes'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(old_id, unchanged_id);
+        source
+            .execute("UPDATE session_model_usage SET input_tokens = 20", [])
+            .unwrap();
+        sync_hermes_usage_logs(&mut dest, &path).unwrap();
+        let (new_id, input, total, parent): (i64, i64, i64, String) = dest
+            .query_row(
+                "SELECT id, tokens_input, tokens_total, parent_session_id
+             FROM usage_entries WHERE assistant_type = 'hermes'",
+                [],
+                |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?)),
+            )
+            .unwrap();
+        assert_ne!(old_id, new_id);
+        assert_eq!((input, total, parent.as_str()), (20, 29, "parent"));
+        drop(source);
+        std::fs::remove_file(path).unwrap();
+    }
+
+    #[test]
+    fn sync_hermes_ignores_missing_db_and_missing_tables() {
+        let (path, source) = source();
+        let mut dest = target();
+        let missing = path.with_extension("missing");
+        sync_hermes_usage_logs(&mut dest, &missing).unwrap();
+        source
+            .execute("DROP TABLE session_model_usage", [])
+            .unwrap();
+        sync_hermes_usage_logs(&mut dest, &path).unwrap();
+        assert_eq!(
+            dest.query_row(
+                "SELECT COUNT(*) FROM usage_entries WHERE assistant_type = 'hermes'",
+                [],
+                |row| row.get::<_, i64>(0)
+            )
+            .unwrap(),
+            0
+        );
+        assert_eq!(
+            dest.query_row(
+                "SELECT COUNT(*) FROM sync_state WHERE filename = 'hermes:state'",
+                [],
+                |row| row.get::<_, i64>(0)
+            )
+            .unwrap(),
+            0
+        );
+        drop(source);
+        std::fs::remove_file(path).unwrap();
+    }
+
+    #[test]
+    fn sync_hermes_reconciles_all_rows_and_preserves_other_assistants() {
+        let (path, source) = source();
+        let mut dest = target();
+        add_row(&source, "s1", "a", 10);
+        add_row(&source, "s1", "b", 20);
+        add_row(&source, "s2", "c", 30);
+        dest.execute(
+            "INSERT INTO usage_entries(assistant_type, timestamp, date, session_id, turn_no)
+             VALUES ('mcode', '2026-09-19', '2026-09-19', 'm1', 1)",
+            [],
+        )
+        .unwrap();
+        sync_hermes_usage_logs(&mut dest, &path).unwrap();
+        let (count, distinct_keys, sum_input): (i64, i64, i64) = dest
+            .query_row(
+                "SELECT COUNT(*), COUNT(DISTINCT session_id || ':' || turn_no), SUM(tokens_input)
+             FROM usage_entries WHERE assistant_type = 'hermes'",
+                [],
+                |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+            )
+            .unwrap();
+        assert_eq!((count, distinct_keys, sum_input), (3, 3, 60));
+        let turn_numbers: Vec<i64> = dest.prepare(
+            "SELECT turn_no FROM usage_entries WHERE assistant_type = 'hermes' ORDER BY session_id, turn_no"
+        ).unwrap().query_map([], |row| row.get(0)).unwrap().map(Result::unwrap).collect();
+        assert_eq!(turn_numbers, vec![1, 2, 1]);
+        source
+            .execute("DELETE FROM session_model_usage WHERE model = 'a'", [])
+            .unwrap();
+        sync_hermes_usage_logs(&mut dest, &path).unwrap();
+        assert_eq!(
+            dest.query_row(
+                "SELECT COUNT(*) FROM usage_entries WHERE assistant_type = 'hermes'",
+                [],
+                |row| row.get::<_, i64>(0)
+            )
+            .unwrap(),
+            2
+        );
+        assert_eq!(
+            dest.query_row(
+                "SELECT COUNT(*) FROM usage_entries WHERE assistant_type = 'mcode'",
+                [],
+                |row| row.get::<_, i64>(0)
+            )
+            .unwrap(),
+            1
+        );
+        drop(source);
+        std::fs::remove_file(path).unwrap();
+    }
+
+    #[test]
+    fn sync_hermes_rolls_back_delete_when_sync_state_write_fails() {
+        let (path, source) = source();
+        let mut dest = target();
+        add_row(&source, "s1", "a", 10);
+        dest.execute(
+            "INSERT INTO usage_entries(assistant_type, timestamp, date, session_id, turn_no)
+             VALUES ('hermes', 'old', 'old', 'old', 1)",
+            [],
+        )
+        .unwrap();
+        dest.execute_batch(
+            "CREATE TRIGGER fail_hermes_state BEFORE INSERT ON sync_state
+             WHEN NEW.filename = 'hermes:state'
+             BEGIN SELECT RAISE(ABORT, 'test failure'); END;",
+        )
+        .unwrap();
+        assert!(sync_hermes_usage_logs(&mut dest, &path).is_err());
+        let retained: String = dest
+            .query_row(
+                "SELECT session_id FROM usage_entries WHERE assistant_type = 'hermes'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(retained, "old");
+        drop(source);
+        std::fs::remove_file(path).unwrap();
     }
 }

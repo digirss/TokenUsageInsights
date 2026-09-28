@@ -11,8 +11,8 @@ use crate::{
     timeline::{
         parse_antigravity_timeline, parse_claude_timeline, parse_codex_timeline,
         parse_copilot_timeline_filtered, parse_cursor_timeline, parse_grok_timeline,
-        parse_mcode_timeline, parse_muse_timeline, parse_omp_timeline, parse_pi_timeline,
-        parse_vscode_timeline, TimelineItem,
+        parse_hermes_timeline, parse_mcode_timeline, parse_muse_timeline, parse_omp_timeline,
+        parse_pi_timeline, parse_vscode_timeline, TimelineItem,
     },
 };
 
@@ -59,6 +59,7 @@ impl From<SessionFileError> for SessionDetailsError {
 pub(crate) fn parse_session_timeline_file(
     assistant: &str,
     source_kind: &str,
+    session_id: &str,
     filepath: &Path,
     db_entries: &HashMap<u32, (TokenStats, String)>,
     copilot_agent_filter: Option<&str>,
@@ -85,6 +86,12 @@ pub(crate) fn parse_session_timeline_file(
             ));
         };
         parse_mcode_timeline(session_dir, db_entries, &mut timeline, &mut metadata);
+        return Ok((timeline, metadata));
+    }
+
+    if source_kind == crate::hermes::SOURCE_KIND {
+        parse_hermes_timeline(filepath, session_id, &mut timeline, &mut metadata)
+            .map_err(|error| (StatusCode::BAD_REQUEST, error))?;
         return Ok((timeline, metadata));
     }
 
@@ -359,6 +366,7 @@ pub(crate) fn load_session_details(
     let (timeline, mut metadata) = parse_session_timeline_file(
         &lookup.assistant_type,
         &lookup.source_kind,
+        &session_id,
         &filepath,
         &db_entries,
         agent_filter,
@@ -638,6 +646,7 @@ mod tests {
         let (timeline, metadata) = parse_session_timeline_file(
             "copilot",
             "copilot-cli",
+            parent,
             &resolved,
             &db_entries,
             Some(agent),

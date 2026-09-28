@@ -31,6 +31,7 @@ pub fn normalize_assistant_name(assistant: &str) -> String {
         }
         "mcode" | "minimax-code" | "minimax_code" | "minimaxcode" | "mini-max-code"
         | "mini_max_code" => "mcode".to_string(),
+        "hermes" | "hermes-agent" | "hermes_agent" | "hermesagent" => "hermes".to_string(),
         _ => normalized,
     }
 }
@@ -57,6 +58,7 @@ pub fn is_supported_assistant(assistant: &str) -> bool {
             | "omp"
             | "muse"
             | "mcode"
+            | "hermes"
     )
 }
 
@@ -86,6 +88,7 @@ pub struct SetupInfoResponse {
     pub omp: AssistantSetupStatus,
     pub muse: AssistantSetupStatus,
     pub mcode: AssistantSetupStatus,
+    pub hermes: AssistantSetupStatus,
 }
 
 #[derive(Serialize)]

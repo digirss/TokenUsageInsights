@@ -99,6 +99,8 @@ if [[ "$install_service" == true ]]; then
     MUSE_DIR
     MCODE_DIR
     MCODE_STATE_DB
+    HERMES_DIR
+    HERMES_STATE_DB
     VSCODE_DIR
     VSCODE_USER_DATA_DIR
     VSCODE_PORTABLE_DATA_DIR

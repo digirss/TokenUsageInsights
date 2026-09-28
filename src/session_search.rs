@@ -142,6 +142,7 @@ pub(crate) fn search_user_prompts(
         let (timeline, _) = match parse_session_timeline_file(
             &session.assistant_type,
             &session.source_kind,
+            &session.session_id,
             &filepath,
             &db_entries,
             session.agent_nickname.as_deref(),

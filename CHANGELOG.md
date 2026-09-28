@@ -4,6 +4,16 @@
 
 ## [未發行]
 
+### 新增與改善
+
+- 新增 `hermes`（Hermes Agent）資料來源，唯讀匯入 `~/.hermes/state.db` 中 `session_model_usage` 的累計 Token 用量，涵蓋 CLI、排程與子 Agent Session；支援會話時間軸、使用者訊息搜尋、現有統計及匯出 API。
+- 新增 `HERMES_DIR` 與 `HERMES_STATE_DB`，分別指定顯示用的資料目錄及實際唯讀資料庫路徑。`pricing.csv` 加入 `glm-5.3` 單價，供未回報費用的用量估算。
+
+### 資料影響
+
+- Hermes 用量以 `assistant_type = 'hermes'`、`source_kind = 'hermes-session'` 寫入既有 `usage_entries`，無需結構遷移。來源逐列累計，輸入與快取 Token 分開計算；沒有逐次回覆 Token 的時間軸不顯示單次用量。
+- 來源資料庫未安裝或缺表時略過；同步指紋不變時跳過重建，變更時在單一交易中只重建 Hermes 列。本專案不寫入 Hermes 的資料庫。
+
 ## [1.1.1] - 2026-09-28
 
 ### 修正

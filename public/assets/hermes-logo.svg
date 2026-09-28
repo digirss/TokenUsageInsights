@@ -1,0 +1,5 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" role="img" aria-labelledby="hermesLogoTitle">
+  <title id="hermesLogoTitle">Hermes Agent</title>
+  <rect width="24" height="24" rx="6" fill="#7C5CFF"/>
+  <path d="M8 6.5v11M16 6.5v11M8 12h8" stroke="#F5F2FF" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round"/>
+</svg>

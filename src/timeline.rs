@@ -2984,6 +2984,141 @@ pub fn parse_muse_timeline(
     metadata.insert("cwd".to_string(), serde_json::Value::String(String::new()));
 }
 
+/// Keep long tool output bounded while leaving enough context at both ends.
+fn hermes_tool_excerpt(text: &str) -> String {
+    let count = text.chars().count();
+    if count <= 4000 {
+        return text.to_string();
+    }
+    let head: String = text.chars().take(1980).collect();
+    let tail: String = text.chars().skip(count - 1980).collect();
+    format!("{head}\n… [工具輸出已截斷] …\n{tail}")
+}
+
+fn hermes_tool_exit_code(text: &str) -> Option<i32> {
+    let marker = "exit_code";
+    let (_, rest) = text.split_once(marker)?;
+    let rest = rest.trim_start_matches(['"', '\'', ' ', ':', '=']);
+    let digits: String = rest
+        .chars()
+        .take_while(|ch| ch.is_ascii_digit() || *ch == '-')
+        .collect();
+    digits.parse().ok()
+}
+
+/// Hermes stores per-model cumulative usage, so message replies deliberately
+/// have no per-turn token attribution. Search and drawer share this parser.
+pub fn parse_hermes_timeline(
+    state_db: &Path,
+    session_id: &str,
+    timeline: &mut Vec<TimelineItem>,
+    metadata: &mut HashMap<String, serde_json::Value>,
+) -> Result<(), String> {
+    let (model, messages) = crate::hermes::read_messages(state_db, session_id)?;
+    let mut turn_no = 1u32;
+    let mut tool_calls: HashMap<String, (String, Value)> = HashMap::new();
+    for message in messages {
+        let timestamp = message
+            .timestamp
+            .map(crate::hermes::epoch_seconds_to_rfc3339)
+            .unwrap_or_default();
+        match message.role.as_str() {
+            "user" => {
+                let prompt = message.content.unwrap_or_default();
+                if !prompt.is_empty() {
+                    timeline.push(TimelineItem::UserPrompt {
+                        timestamp,
+                        prompt,
+                        context: None,
+                        turn_no,
+                    });
+                }
+            }
+            "assistant" => {
+                if let Some(calls) = message
+                    .tool_calls
+                    .as_deref()
+                    .and_then(|json| serde_json::from_str::<Value>(json).ok())
+                    .and_then(|value| value.as_array().cloned())
+                {
+                    for call in calls {
+                        let call_id = call
+                            .get("id")
+                            .or_else(|| call.get("call_id"))
+                            .and_then(Value::as_str);
+                        let function = call.get("function");
+                        if let Some(call_id) = call_id {
+                            let name = function
+                                .and_then(|value| value.get("name"))
+                                .and_then(Value::as_str)
+                                .unwrap_or("tool")
+                                .to_string();
+                            let arguments = function
+                                .and_then(|value| value.get("arguments"))
+                                .cloned()
+                                .unwrap_or(Value::Null);
+                            let arguments = match arguments {
+                                Value::String(raw) => {
+                                    serde_json::from_str(&raw).unwrap_or(Value::String(raw))
+                                }
+                                value => value,
+                            };
+                            tool_calls.insert(call_id.to_string(), (name, arguments));
+                        }
+                    }
+                }
+                let reasoning = message
+                    .reasoning_content
+                    .filter(|text| !text.is_empty())
+                    .or(message.reasoning.filter(|text| !text.is_empty()));
+                timeline.push(TimelineItem::AgentReply {
+                    timestamp,
+                    reply: message.content.unwrap_or_default(),
+                    reasoning,
+                    turn_no,
+                    model: model.clone(),
+                    tokens: None,
+                    duration_ms: None,
+                    reasoning_effort: None,
+                });
+                turn_no = turn_no.saturating_add(1);
+            }
+            "tool" => {
+                let call = message
+                    .tool_call_id
+                    .as_deref()
+                    .and_then(|call_id| tool_calls.get(call_id));
+                let text = message.content.unwrap_or_default();
+                let exit_code = hermes_tool_exit_code(&text);
+                timeline.push(TimelineItem::ToolStep {
+                    timestamp,
+                    tool_name: message
+                        .tool_name
+                        .or_else(|| call.map(|(name, _)| name.clone()))
+                        .unwrap_or_else(|| "tool".to_string()),
+                    arguments: call
+                        .map(|(_, arguments)| arguments.clone())
+                        .unwrap_or(Value::Null),
+                    env: None,
+                    exit_code,
+                    stdout: hermes_tool_excerpt(&text),
+                    stderr: String::new(),
+                    tool_call_id: message.tool_call_id,
+                    status: if exit_code.is_some_and(|code| code != 0) {
+                        "failed"
+                    } else {
+                        "success"
+                    }
+                    .to_string(),
+                });
+            }
+            _ => {}
+        }
+    }
+    metadata.insert("selected_model".to_string(), Value::String(model));
+    Ok(())
+}
+
 /// Reconstructs the conversation timeline of one MiniMax Code session. Unlike
 /// the other assistants a single session spans several JSONL files
 /// (`messages.jsonl` plus `snapshots/*.jsonl`), so the session directory is
@@ -3508,5 +3643,100 @@ mod mcode_tests {
             3,
             "the usage-less assistant must not emit a reply or consume a turn"
         );
+    }
+}
+
+#[cfg(test)]
+mod hermes_tests {
+    use super::*;
+    use rusqlite::{params, Connection};
+    use std::sync::atomic::{AtomicU64, Ordering};
+
+    static NEXT: AtomicU64 = AtomicU64::new(0);
+
+    fn fixture() -> (std::path::PathBuf, Connection) {
+        let path = std::env::temp_dir().join(format!(
+            "tu-hermes-timeline-{}-{}.db",
+            std::process::id(),
+            NEXT.fetch_add(1, Ordering::Relaxed)
+        ));
+        let conn = Connection::open(&path).unwrap();
+        conn.execute_batch(
+            "CREATE TABLE sessions (id TEXT PRIMARY KEY, model TEXT);
+             CREATE TABLE messages (id INTEGER PRIMARY KEY, session_id TEXT, role TEXT,
+               content TEXT, tool_call_id TEXT, tool_calls TEXT, tool_name TEXT,
+               timestamp REAL, reasoning TEXT, reasoning_content TEXT, display_kind TEXT);
+             INSERT INTO sessions (id, model) VALUES ('s1', 'glm-5.3');",
+        )
+        .unwrap();
+        (path, conn)
+    }
+
+    #[test]
+    fn builds_scoped_prompt_reply_and_tool_timeline_without_per_turn_tokens() {
+        let (path, conn) = fixture();
+        conn.execute("INSERT INTO messages(session_id, role, content, timestamp) VALUES ('s1','user','searchable prompt',1.1)", []).unwrap();
+        let calls = serde_json::json!([{"id": "call-1", "type": "function", "function": {
+            "name": "terminal", "arguments": "{\"command\":\"pwd\"}"
+        }}]);
+        conn.execute("INSERT INTO messages(session_id, role, content, tool_calls, timestamp, reasoning) VALUES ('s1','assistant','first',?1,2.2,'think')", [calls.to_string()]).unwrap();
+        conn.execute(
+            "INSERT INTO messages(session_id, role, content, tool_call_id, tool_name, timestamp)
+            VALUES ('s1','tool','{\"exit_code\":1}','call-1','terminal',3.3)",
+            [],
+        )
+        .unwrap();
+        conn.execute("INSERT INTO messages(session_id, role, content, timestamp, reasoning_content) VALUES ('s1','assistant','second',4.4,'reasoned')", []).unwrap();
+        conn.execute("INSERT INTO messages(session_id, role, content, timestamp, display_kind) VALUES ('s1','assistant','hidden',5,'hidden')", []).unwrap();
+        let (mut timeline, mut metadata) = (Vec::new(), HashMap::new());
+        parse_hermes_timeline(&path, "s1", &mut timeline, &mut metadata).unwrap();
+        assert_eq!(timeline.len(), 4);
+        assert!(
+            matches!(&timeline[0], TimelineItem::UserPrompt { prompt, turn_no, .. }
+            if prompt == "searchable prompt" && *turn_no == 1)
+        );
+        assert!(
+            matches!(&timeline[1], TimelineItem::AgentReply { reply, reasoning, model, tokens, turn_no, .. }
+            if reply == "first" && reasoning.as_deref() == Some("think") && model == "glm-5.3" && tokens.is_none() && *turn_no == 1)
+        );
+        assert!(
+            matches!(&timeline[2], TimelineItem::ToolStep { arguments, status, exit_code, .. }
+            if arguments["command"] == "pwd" && status == "failed" && *exit_code == Some(1))
+        );
+        assert!(
+            matches!(&timeline[3], TimelineItem::AgentReply { reasoning, turn_no, tokens, .. }
+            if reasoning.as_deref() == Some("reasoned") && *turn_no == 2 && tokens.is_none())
+        );
+        assert_eq!(metadata["selected_model"], "glm-5.3");
+        drop(conn);
+        std::fs::remove_file(path).unwrap();
+    }
+
+    #[test]
+    fn preserves_unicode_tool_head_and_tail_and_isolates_other_sessions() {
+        let (path, conn) = fixture();
+        let output = format!("頭{}尾 exit_code=0", "中".repeat(5000));
+        conn.execute(
+            "INSERT INTO messages(session_id, role, content, tool_name, timestamp)
+            VALUES ('s1','tool',?1,'browser',2.0)",
+            params![output],
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO messages(session_id, role, content, timestamp)
+            VALUES ('else','user','not included',1.0)",
+            [],
+        )
+        .unwrap();
+        let (mut timeline, mut metadata) = (Vec::new(), HashMap::new());
+        parse_hermes_timeline(&path, "s1", &mut timeline, &mut metadata).unwrap();
+        assert_eq!(timeline.len(), 1);
+        assert!(
+            matches!(&timeline[0], TimelineItem::ToolStep { stdout, status, tool_name, .. }
+            if stdout.starts_with("頭") && stdout.ends_with("exit_code=0") && stdout.chars().count() <= 4000
+                && status == "success" && tool_name == "browser")
+        );
+        drop(conn);
+        std::fs::remove_file(path).unwrap();
     }
 }
