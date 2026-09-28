@@ -99,6 +99,10 @@
             <img class="assistant-logo" src="/static/mcode-logo.svg" alt="MiniMax Code" />
             <span class="agent-name-tooltip">MiniMax Code</span>
           </button>
+          <button class="assistant-badge-btn" data-value="hermes" title="Hermes Agent" aria-label="Hermes Agent">
+            <img class="assistant-logo" src="/static/hermes-logo.svg" alt="Hermes Agent" />
+            <span class="agent-name-tooltip">Hermes Agent</span>
+          </button>
         </div>
       </div>
 
@@ -1350,6 +1354,28 @@ cd TokenUsageInsights</code></pre>
           <p class="modal-text" data-i18n="mcode_setup_step_3_desc">MiniMax Code 的本地日誌未提供費用欄位，本看板會依 session 回報的 Token 數量，對照 <code>pricing.csv</code> 的模型單價估算費用；工作目錄與 Session 名稱則取自 MiniMax Code 的 runtime 資料庫。</p>
         </div>
       </div>
+
+      <!-- Hermes Agent Setup Content -->
+      <div class="modal-body" id="setup-body-hermes" style="display: none;">
+        <div class="modal-text">
+          <p data-i18n="hermes_setup_modal_intro">本看板主要解析並呈現 Hermes Agent 自動保存的本地 session 記錄。Hermes Agent 不需要額外設定狀態列腳本。</p>
+        </div>
+
+        <div class="modal-section">
+          <h3 data-i18n="hermes_setup_step_1"><span>01</span> 1. 確認 Hermes Agent 已在使用</h3>
+          <p class="modal-text" data-i18n="hermes_setup_step_1_desc">在終端機中使用過 Hermes Agent 後，session 記錄會自動保存至 <code>~/.hermes/state.db</code>。</p>
+        </div>
+
+        <div class="modal-section">
+          <h3 data-i18n="hermes_setup_step_2"><span>02</span> 2. 偵測本機資料路徑</h3>
+          <p class="modal-text" data-i18n="hermes_setup_step_2_desc">目前偵測到的 Hermes Agent 資料路徑為：<code id="lbl-detected-home-hermes">~/.hermes/state.db</code>。</p>
+        </div>
+
+        <div class="modal-section">
+          <h3 data-i18n="hermes_setup_step_3"><span>03</span> 3. 了解計費資料來源</h3>
+          <p class="modal-text" data-i18n="hermes_setup_step_3_desc">Hermes Agent 的本地資料庫未提供費用欄位，本看板會依 session 回報的 Token 數量，對照 <code>pricing.csv</code> 的模型單價估算費用。</p>
+        </div>
+      </div>
     </div>
   </div>
 
@@ -1431,6 +1457,7 @@ cd TokenUsageInsights</code></pre>
             <option value="pi">Pi Coding Agent</option>
             <option value="omp">OMP</option>
             <option value="mcode">MiniMax Code</option>
+            <option value="hermes">Hermes Agent</option>
           </select>
         </label>
         <div id="usage-import-validation" class="usage-import-validation" role="status"></div>
