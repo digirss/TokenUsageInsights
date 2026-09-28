@@ -2,6 +2,7 @@
 //! (session, model, provider, URL, billing mode, task), not per message/turn.
 use crate::db::{CostStats, TokenStats, UsageEntry};
 use rusqlite::{params, Connection, OpenFlags, OptionalExtension};
+use std::collections::HashMap;
 use std::path::Path;
 use std::time::Duration;
 
@@ -59,6 +60,7 @@ pub(crate) struct UsageRow {
     actual_cost: Option<f64>,
     cost_status: Option<String>,
     last_seen: Option<f64>,
+    api_calls: i64,
 }
 
 fn non_empty(value: Option<String>) -> Option<String> {
@@ -96,6 +98,13 @@ pub(crate) fn usage_entry(row: UsageRow, state_db: &Path, turn_no: u32) -> Usage
                 .flatten()
                 .filter(|cost| cost.is_finite() && *cost > 0.0)
         });
+    let total_api_calls: u64 = row.api_calls.max(0) as u64;
+    let cost = (reported_cost_usd.is_some() || total_api_calls > 0).then(|| CostStats {
+        total_api_duration_ms: None,
+        total_duration_ms: None,
+        total_premium_requests: (total_api_calls > 0).then_some(total_api_calls as f64),
+        reported_cost_usd,
+    });
     UsageEntry {
         timestamp: row
             .last_seen
@@ -112,12 +121,7 @@ pub(crate) fn usage_entry(row: UsageRow, state_db: &Path, turn_no: u32) -> Usage
         tokens: Some(tokens.clone()),
         delta_tokens: Some(tokens),
         context: None,
-        cost: reported_cost_usd.map(|reported_cost_usd| CostStats {
-            total_api_duration_ms: None,
-            total_duration_ms: None,
-            total_premium_requests: None,
-            reported_cost_usd: Some(reported_cost_usd),
-        }),
+        cost,
         source_kind: Some(SOURCE_KIND.to_string()),
         source_dir_key: None,
         parent_session_id: non_empty(row.parent_session_id),
@@ -128,17 +132,21 @@ pub(crate) fn usage_entry(row: UsageRow, state_db: &Path, turn_no: u32) -> Usage
 }
 
 pub(crate) fn usage_fingerprint(conn: &Connection) -> Result<String, String> {
-    let (max_seen, count, total): (Option<f64>, i64, i64) = conn
+    let (max_seen, count, total, api_calls): (Option<f64>, i64, i64, i64) = conn
         .query_row(
             "SELECT MAX(last_seen), COUNT(*),
                     COALESCE(SUM(COALESCE(input_tokens, 0) + COALESCE(output_tokens, 0) +
-                                 COALESCE(cache_read_tokens, 0) + COALESCE(cache_write_tokens, 0)), 0)
+                                 COALESCE(cache_read_tokens, 0) + COALESCE(cache_write_tokens, 0)), 0),
+                    COALESCE(SUM(COALESCE(api_call_count, 0)), 0)
              FROM session_model_usage",
             [],
-            |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+            |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?)),
         )
         .map_err(|error| format!("讀取 Hermes Agent 用量指紋失敗: {error}"))?;
-    Ok(format!("{:.6}:{count}:{total}", max_seen.unwrap_or(0.0)))
+    Ok(format!(
+        "{:.6}:{count}:{total}:{api_calls}",
+        max_seen.unwrap_or(0.0)
+    ))
 }
 
 pub(crate) fn read_usage_entries(
@@ -151,10 +159,10 @@ pub(crate) fn read_usage_entries(
                     u.model, u.billing_provider, u.billing_base_url, u.billing_mode, u.task,
                     u.input_tokens, u.output_tokens, u.cache_read_tokens, u.cache_write_tokens,
                     u.reasoning_tokens, u.estimated_cost_usd, u.actual_cost_usd, u.cost_status,
-                    u.first_seen, u.last_seen
-             FROM session_model_usage u JOIN sessions s ON s.id = u.session_id
-             ORDER BY u.session_id, u.last_seen, u.model, u.billing_provider, u.billing_base_url,
-                      u.billing_mode, u.task",
+ u.first_seen, u.last_seen, u.api_call_count
+ FROM session_model_usage u JOIN sessions s ON s.id = u.session_id
+ ORDER BY u.session_id, u.last_seen, u.model, u.billing_provider, u.billing_base_url,
+   u.billing_mode, u.task",
         )
         .map_err(|error| format!("查詢 Hermes Agent 用量失敗: {error}"))?;
     let rows = statement
@@ -174,19 +182,30 @@ pub(crate) fn read_usage_entries(
                 actual_cost: row.get(15)?,
                 cost_status: row.get(16)?,
                 last_seen: row.get(18)?,
+                api_calls: row.get::<_, Option<i64>>(19)?.unwrap_or(0),
             })
         })
-        .map_err(|error| format!("讀取 Hermes Agent 用量失敗: {error}"))?;
+        .map_err(|error| format!("讀取 Hermes Agent 用量失敗: {error}"))?
+        .collect::<rusqlite::Result<Vec<_>>>()
+        .map_err(|error| format!("解析 Hermes Agent 用量失敗: {error}"))?;
+    // The daily/monthly readers take the latest entry of a session as the
+    // whole-session snapshot, so stamp the per-session cumulative API call
+    // count on every row (the same shape the statusline-written agents use).
+    let mut session_api_calls: HashMap<String, i64> = HashMap::new();
+    for row in &rows {
+        let total = session_api_calls.entry(row.session_id.clone()).or_insert(0);
+        *total = total.saturating_add(row.api_calls.max(0));
+    }
     let mut entries = Vec::new();
     let mut last_session = String::new();
     let mut turn_no = 0u32;
-    for row in rows {
-        let row = row.map_err(|error| format!("解析 Hermes Agent 用量失敗: {error}"))?;
+    for mut row in rows {
         if row.session_id != last_session {
             last_session.clone_from(&row.session_id);
             turn_no = 0;
         }
         turn_no = turn_no.saturating_add(1);
+        row.api_calls = session_api_calls.get(&row.session_id).copied().unwrap_or(0);
         let entry = usage_entry(row, state_db, turn_no);
         if !entry.timestamp.is_empty() {
             entries.push(entry);
@@ -276,7 +295,8 @@ mod tests {
                 "CREATE TABLE sessions (id TEXT PRIMARY KEY, title TEXT, cwd TEXT, parent_session_id TEXT, model TEXT);
                  CREATE TABLE session_model_usage (
                     session_id TEXT, model TEXT, billing_provider TEXT, billing_base_url TEXT,
-                    billing_mode TEXT, task TEXT, input_tokens INTEGER, output_tokens INTEGER,
+                    billing_mode TEXT, task TEXT, api_call_count INTEGER, input_tokens INTEGER,
+                    output_tokens INTEGER,
                     cache_read_tokens INTEGER, cache_write_tokens INTEGER, reasoning_tokens INTEGER,
                     estimated_cost_usd REAL, actual_cost_usd REAL, cost_status TEXT,
                     first_seen REAL, last_seen REAL);
@@ -301,8 +321,8 @@ mod tests {
         ) {
             let conn = self.connection();
             conn.execute("INSERT OR IGNORE INTO sessions(id, title, cwd, model) VALUES (?1, 'Title', '/project', ?2)", params![session, model]).unwrap();
-            conn.execute("INSERT INTO session_model_usage(session_id, model, billing_provider, billing_base_url, billing_mode, task, input_tokens, output_tokens, cache_read_tokens, cache_write_tokens, reasoning_tokens, last_seen)
-                VALUES (?1, ?2, ?3, '', '', '', ?4, 2, 3, 4, 5, ?5)", params![session, model, provider, input, last_seen]).unwrap();
+            conn.execute("INSERT INTO session_model_usage(session_id, model, billing_provider, billing_base_url, billing_mode, task, api_call_count, input_tokens, output_tokens, cache_read_tokens, cache_write_tokens, reasoning_tokens, last_seen)
+                VALUES (?1, ?2, ?3, '', '', '', 7, ?4, 2, 3, 4, 5, ?5)", params![session, model, provider, input, last_seen]).unwrap();
         }
     }
 
@@ -312,6 +332,8 @@ mod tests {
         }
     }
 
+    // 測試用 fixture 需要 api_call_count。改由 INSERT 帶入 7（見下），
+    // UsageRow::api_calls 由查詢讀取；此處補上 sample_row 的預設值。
     fn sample_row() -> UsageRow {
         UsageRow {
             session_id: "s1".into(),
@@ -328,6 +350,7 @@ mod tests {
             actual_cost: None,
             cost_status: None,
             last_seen: Some(1_789_830_965.412),
+            api_calls: 0,
         }
     }
 
@@ -409,6 +432,53 @@ mod tests {
         assert!(usage_entry(row, Path::new("/tmp/state.db"), 1)
             .cost
             .is_none());
+    }
+
+    #[test]
+    fn maps_api_call_count_to_total_premium_requests() {
+        let mut row = sample_row();
+        row.api_calls = 42;
+        let cost = usage_entry(row.clone(), Path::new("/tmp/state.db"), 1)
+            .cost
+            .expect("api calls alone must produce cost stats");
+        assert_eq!(cost.total_premium_requests, Some(42.0));
+        assert_eq!(cost.reported_cost_usd, None);
+        row.api_calls = 0;
+        assert!(usage_entry(row, Path::new("/tmp/state.db"), 1)
+            .cost
+            .is_none());
+    }
+
+    #[test]
+    fn stamps_session_cumulative_api_calls_on_every_row() {
+        let fixture = Fixture::new();
+        fixture.insert("s1", "a", "p", 10, 100.0);
+        fixture.insert("s1", "b", "p", 20, 110.0);
+        fixture.insert("s2", "c", "p", 30, 120.0);
+        let conn = open_state_db(&fixture.path, &["sessions", "session_model_usage"])
+            .unwrap()
+            .unwrap();
+        let entries = read_usage_entries(&conn, &fixture.path).unwrap();
+        let s1: Vec<u64> = entries
+            .iter()
+            .filter(|entry| entry.session_id == "s1")
+            .map(|entry| {
+                entry
+                    .cost
+                    .as_ref()
+                    .and_then(|cost| cost.total_premium_requests)
+                    .unwrap_or(0.0) as u64
+            })
+            .collect();
+        let s2: u64 = entries
+            .iter()
+            .find(|entry| entry.session_id == "s2")
+            .and_then(|entry| entry.cost.as_ref())
+            .and_then(|cost| cost.total_premium_requests)
+            .unwrap_or(0.0) as u64;
+        // fixture inserts api_call_count = 7 per row: s1 has two rows (14), s2 one (7)
+        assert_eq!(s1, vec![14, 14]);
+        assert_eq!(s2, 7);
     }
 
     #[test]

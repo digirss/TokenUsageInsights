@@ -18347,7 +18347,7 @@ mod hermes_sync_tests {
                parent_session_id TEXT, model TEXT);
              CREATE TABLE session_model_usage (session_id TEXT, model TEXT,
                billing_provider TEXT, billing_base_url TEXT, billing_mode TEXT,
-               task TEXT, input_tokens INTEGER, output_tokens INTEGER,
+               task TEXT, api_call_count INTEGER, input_tokens INTEGER, output_tokens INTEGER,
                cache_read_tokens INTEGER, cache_write_tokens INTEGER,
                reasoning_tokens INTEGER, estimated_cost_usd REAL,
                actual_cost_usd REAL, cost_status TEXT, first_seen REAL, last_seen REAL);",
@@ -18367,9 +18367,9 @@ mod hermes_sync_tests {
         source
             .execute(
                 "INSERT INTO session_model_usage(session_id, model, billing_provider,
-             billing_base_url, billing_mode, task, input_tokens, output_tokens,
+             billing_base_url, billing_mode, task, api_call_count, input_tokens, output_tokens,
              cache_read_tokens, cache_write_tokens, reasoning_tokens, last_seen)
-             VALUES (?1, ?2, 'zai', '', 'api', '', ?3, 2, 3, 4, 5, 1789830965.412)",
+             VALUES (?1, ?2, 'zai', '', 'api', '', 7, ?3, 2, 3, 4, 5, 1789830965.412)",
                 params![id, model, input],
             )
             .unwrap();
