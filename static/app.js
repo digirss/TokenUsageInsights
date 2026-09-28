@@ -105,6 +105,9 @@ const assistantAliasMap = {
   'minimaxcode': 'mcode',
   'mini-max-code': 'mcode',
   'mini_max_code': 'mcode',
+  'hermes-agent': 'hermes',
+  'hermes_agent': 'hermes',
+  'hermesagent': 'hermes',
 };
 
 const assistantMeta = {
@@ -207,6 +210,16 @@ const assistantMeta = {
     senderName: 'MINIMAX CODE AGENT',
     highlightColor: '#ff8a6b',
     nameHighlights: ['MiniMax Code'],
+  },
+  hermes: {
+    logo: '/static/hermes-logo.svg',
+    label: 'Hermes Agent',
+    shortLabel: 'Hermes Agent',
+    alt: 'Hermes Agent',
+    badgeStyle: 'background: rgba(124, 92, 255, 0.15); color: #7c5cff; border: 1px solid rgba(124, 92, 255, 0.3); display: inline-flex; align-items: center;',
+    senderName: 'HERMES AGENT',
+    highlightColor: '#7c5cff',
+    nameHighlights: ['Hermes Agent'],
   },
 };
 
@@ -642,6 +655,7 @@ const setupModalTitleKeys = {
   pi: 'pi_setup_modal_title',
   omp: 'omp_setup_modal_title',
   mcode: 'mcode_setup_modal_title',
+  hermes: 'hermes_setup_modal_title',
 };
 
 function getSetupModalTitleKey(assistant) {
@@ -669,6 +683,7 @@ function setSetupModalBody(assistant) {
     pi: 'setup-body-pi',
     omp: 'setup-body-omp',
     mcode: 'setup-body-mcode',
+    hermes: 'setup-body-hermes',
   };
   const bodyElements = Object.values(bodyIds)
     .filter((bodyId, index, ids) => ids.indexOf(bodyId) === index)
@@ -7210,6 +7225,9 @@ async function loadSetupInfo(assistant = currentAssistant) {
     } else if (resolvedAssistant === 'mcode') {
       const homeLabelMcode = document.getElementById('lbl-detected-home-mcode');
       if (homeLabelMcode) homeLabelMcode.textContent = abbreviateHomePath(data.mcode?.data_path || '');
+    } else if (resolvedAssistant === 'hermes') {
+      const homeLabelHermes = document.getElementById('lbl-detected-home-hermes');
+      if (homeLabelHermes) homeLabelHermes.textContent = abbreviateHomePath(data.hermes?.data_path || '');
     }
 
     // Apply updated language translations
