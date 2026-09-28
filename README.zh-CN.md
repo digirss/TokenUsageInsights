@@ -58,8 +58,9 @@ http://localhost:3003
 | OMP | 不需要 | `~/.omp/agent/sessions` | 看板会直接扫描 OMP 自动保存的本地 Session JSONL 文件 |
 | Muse Code | 不需要 | `~/.local/share/muse/sessions` | 看板会直接扫描 Muse Code 自动保存的本地 Session JSONL 文件 |
 | MiniMax Code | 不需要 | `~/.minimax/v2/sessions` | 看板会直接扫描 MiniMax Code 自动保存的本地 Session JSONL 文件，并以只读方式取得工作目录与 Session 名称 |
+| Hermes Agent | 不需要 | `~/.hermes/state.db` | 只读读取会话模型用量和消息，包含定时任务与子 Agent 会话 |
 
-**只使用 Copilot App、VS Code Copilot、Codex Desktop、Codex CLI、Claude Code、Cursor、Grok Build、Pi Coding Agent、OMP、Muse Code 或 MiniMax Code 时，执行一行安装命令并打开看板即可。**
+**只使用 Copilot App、VS Code Copilot、Codex Desktop、Codex CLI、Claude Code、Cursor、Grok Build、Pi Coding Agent、OMP、Muse Code、MiniMax Code 或 Hermes Agent 时，执行一行安装命令并打开看板即可。**
 
 ### Windows 原生使用
 
@@ -80,6 +81,7 @@ Windows 默认使用以下原生路径：
 | OMP | `%USERPROFILE%\.omp` |
 | Muse Code | `%USERPROFILE%\.local\share\muse` |
 | MiniMax Code | `%USERPROFILE%\.minimax\v2` |
+| Hermes Agent | `%USERPROFILE%\.hermes` |
 
 看板内的设置指南会在 Windows 显示 PowerShell 复制、设置与诊断命令。PowerShell collector 使用 .NET JSON 与文件 API，不依赖 Bash、`jq`、`sed` 或 `awk`。
 
@@ -481,6 +483,26 @@ MiniMax Code 的本地日志不提供费用字段，因此本看板会依 Sessio
 
 * * *
 
+## Hermes Agent 设置
+
+**Hermes Agent 不需要 Hook、Status Line 或额外收集脚本。** 看板以只读方式读取：
+
+```text
+~/.hermes/state.db
+```
+
+`session_model_usage` 每行是一个会话／模型／供应商组合的累计用量，而非单次回复的 Token。看板导入有用量记录的全部会话（含定时任务与子 Agent）；输入 Token 不包括另行统计的缓存 Token。时间轴可查看提示词、回复与工具步骤，但 Hermes 未保存逐次回复 Token，因此不显示逐次 Token。
+
+使用方式：
+
+1. 正常使用 Hermes Agent 生成用量记录。
+2. 启动或刷新看板。
+3. 选择 Hermes Agent，点击同步按钮或等待后台同步。
+
+费用优先使用正数实际费用；仅当状态为 `estimated` 时采用正数估计费用，否则使用 `pricing.csv` 估算。`HERMES_DIR` 指定显示的数据目录，`HERMES_STATE_DB` 独立指定数据库路径。本项目不会写入 Hermes 的 `state.db`。
+
+* * *
+
 ## 本地数据同步方式
 
 启动服务时，后端会初始化本地 SQLite 并立即同步一次数据。服务启动后，也会每 5 秒进行一次后台同步。
@@ -575,6 +597,8 @@ cargo build --release --bin token-usage-insights
 | `MUSE_DIR` | `~/.local/share/muse` | Muse Code 数据目录，应包含 `sessions` |
 | `MCODE_DIR` | `~/.minimax/v2` | MiniMax Code 数据目录，应包含 `sessions` |
 | `MCODE_STATE_DB` | `~/.minimax/v2/sqlite/runtime-state.sqlite` | MiniMax Code 运行期数据库（只读），提供工作目录与 Session 名称 |
+| `HERMES_DIR` | `~/.hermes` | 设置状态中显示的 Hermes Agent 数据目录 |
+| `HERMES_STATE_DB` | `~/.hermes/state.db` | Hermes Agent 用量和会话数据库（只读） |
 | `CORS_ALLOWED_ORIGINS` | `http://localhost:<PORT>,http://127.0.0.1:<PORT>` | 允许的 CORS 来源，以逗号分隔 |
 
 ### 配置文件 (config.yaml)

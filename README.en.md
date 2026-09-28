@@ -58,8 +58,9 @@ http://localhost:3003
 | OMP | Not required | `~/.omp/agent/sessions` | The dashboard scans the local session JSONL files saved automatically by OMP |
 | Muse Code | Not required | `~/.local/share/muse/sessions` | The dashboard scans the local session JSONL files saved automatically by Muse Code |
 | MiniMax Code | Not required | `~/.minimax/v2/sessions` | The dashboard scans the local session JSONL files saved automatically by MiniMax Code, and read-only resolves the working directory and session name |
+| Hermes Agent | Not required | `~/.hermes/state.db` | Reads session/model usage and messages in read-only mode, including cron and subagent sessions |
 
-**If you only use Copilot App, VS Code Copilot, Codex Desktop, Codex CLI, Claude Code, Cursor, Grok Build, Pi Coding Agent, OMP, Muse Code, or MiniMax Code, run the one-line installation command and open the dashboard.**
+**If you only use Copilot App, VS Code Copilot, Codex Desktop, Codex CLI, Claude Code, Cursor, Grok Build, Pi Coding Agent, OMP, Muse Code, MiniMax Code, or Hermes Agent, run the one-line installation command and open the dashboard.**
 
 ### Native Windows usage
 
@@ -80,6 +81,7 @@ Windows uses the following native paths by default:
 | OMP | `%USERPROFILE%\.omp` |
 | Muse Code | `%USERPROFILE%\.local\share\muse` |
 | MiniMax Code | `%USERPROFILE%\.minimax\v2` |
+| Hermes Agent | `%USERPROFILE%\.hermes` |
 
 The dashboard's setup guide shows PowerShell copy, configuration, and diagnostic commands on Windows. The PowerShell collector uses .NET JSON and file APIs and does not depend on Bash, `jq`, `sed`, or `awk`.
 
@@ -481,6 +483,26 @@ MiniMax Code local logs do not report a cost field, so the dashboard estimates c
 
 * * *
 
+## Hermes Agent setup
+
+**Hermes Agent requires no hooks, Status Line, or extra collector script.** The dashboard reads this SQLite database in read-only mode:
+
+```text
+~/.hermes/state.db
+```
+
+Each `session_model_usage` row is cumulative usage for one session/model/provider combination, not one reply. Sessions with usage include cron and subagents. Input tokens exclude separately counted cache tokens. The conversation timeline shows prompts, replies, and tool steps, but not per-reply tokens because Hermes does not store those counts.
+
+Usage:
+
+1. Use Hermes Agent normally to generate usage records.
+2. Start or refresh the dashboard.
+3. Select Hermes Agent, then click sync or wait for background sync.
+
+Costs use a positive actual amount first, then a positive Hermes estimate only when marked `estimated`; otherwise `pricing.csv` estimates the cost. `HERMES_DIR` controls the displayed data directory and `HERMES_STATE_DB` independently specifies the ledger. This project never writes to Hermes's `state.db`.
+
+* * *
+
 ## Local data synchronization
 
 When the service starts, the backend initializes local SQLite and performs an immediate data sync. After startup, it also syncs in the background every 5 seconds.
@@ -575,6 +597,8 @@ Paths specified by environment variables are authoritative and do not need to be
 | `MUSE_DIR` | `~/.local/share/muse` | Muse Code data directory; should contain `sessions` |
 | `MCODE_DIR` | `~/.minimax/v2` | MiniMax Code data directory; should contain `sessions` |
 | `MCODE_STATE_DB` | `~/.minimax/v2/sqlite/runtime-state.sqlite` | MiniMax Code runtime database (read-only) providing the working directory and session name |
+| `HERMES_DIR` | `~/.hermes` | Hermes Agent data directory shown in setup status |
+| `HERMES_STATE_DB` | `~/.hermes/state.db` | Hermes Agent usage and conversation database (read-only) |
 | `CORS_ALLOWED_ORIGINS` | `http://localhost:<PORT>,http://127.0.0.1:<PORT>` | Comma-separated allowed CORS origins |
 
 ### Configuration file (config.yaml)

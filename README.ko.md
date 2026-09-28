@@ -58,8 +58,9 @@ http://localhost:3003
 | OMP | 불필요 | `~/.omp/agent/sessions` | OMP가 자동 저장하는 로컬 Session JSONL 파일을 직접 스캔 |
 | Muse Code | 불필요 | `~/.local/share/muse/sessions` | Muse Code가 자동 저장하는 로컬 Session JSONL 파일을 직접 스캔 |
 | MiniMax Code | 불필요 | `~/.minimax/v2/sessions` | MiniMax Code가 자동 저장하는 로컬 Session JSONL 파일을 직접 스캔하고 작업 디렉터리와 Session 이름을 읽기 전용으로 확인 |
+| Hermes Agent | 불필요 | `~/.hermes/state.db` | cron 및 하위 Agent Session을 포함한 모델 사용량과 메시지를 읽기 전용으로 조회 |
 
-**Copilot App, VS Code Copilot, Codex Desktop, Codex CLI, Claude Code, Cursor, Grok Build, Pi Coding Agent, OMP, Muse Code 또는 MiniMax Code만 사용하는 경우 한 줄 설치 명령을 실행하고 대시보드를 열기만 하면 됩니다.**
+**Copilot App, VS Code Copilot, Codex Desktop, Codex CLI, Claude Code, Cursor, Grok Build, Pi Coding Agent, OMP, Muse Code, MiniMax Code 또는 Hermes Agent만 사용하는 경우 한 줄 설치 명령을 실행하고 대시보드를 열기만 하면 됩니다.**
 
 ### Windows 네이티브 사용
 
@@ -80,6 +81,7 @@ Windows는 기본적으로 다음 네이티브 경로를 사용합니다.
 | OMP | `%USERPROFILE%\.omp` |
 | Muse Code | `%USERPROFILE%\.local\share\muse` |
 | MiniMax Code | `%USERPROFILE%\.minimax\v2` |
+| Hermes Agent | `%USERPROFILE%\.hermes` |
 
 대시보드의 설정 안내는 Windows에서 PowerShell 복사, 설정 및 진단 명령을 표시합니다. PowerShell collector는 .NET JSON 및 파일 API를 사용하며 Bash, `jq`, `sed`, `awk`에 의존하지 않습니다.
 
@@ -481,6 +483,26 @@ MiniMax Code 로컬 로그에는 비용 필드가 없으므로, 이 대시보드
 
 * * *
 
+## Hermes Agent 설정
+
+**Hermes Agent에는 Hook, Status Line 또는 추가 수집 스크립트가 필요하지 않습니다.** 다음 SQLite를 읽기 전용으로 조회합니다.
+
+```text
+~/.hermes/state.db
+```
+
+`session_model_usage`의 각 행은 Session·모델·공급자 조합의 누적 사용량이며 응답별 Token이 아닙니다. 사용량이 있는 cron 및 하위 Agent Session도 포함합니다. 입력 Token은 별도 집계되는 캐시 Token을 포함하지 않습니다. 타임라인에는 프롬프트, 응답, 도구 단계가 보이지만 Hermes가 응답별 Token을 보존하지 않으므로 응답별 Token은 표시하지 않습니다.
+
+사용 방법:
+
+1. Hermes Agent를 사용해 사용량 기록을 만듭니다.
+2. 대시보드를 시작하거나 새로 고칩니다.
+3. Hermes Agent를 선택하고 동기화 버튼을 누르거나 백그라운드 동기화를 기다립니다.
+
+비용은 양수의 실제 비용을 우선하고, 상태가 `estimated`인 양수 추정 비용만 다음으로 사용합니다. 그 외에는 `pricing.csv`로 추정합니다. `HERMES_DIR`은 표시할 데이터 디렉터리, `HERMES_STATE_DB`는 독립적인 DB 경로를 지정합니다. 이 프로젝트는 Hermes의 `state.db`에 쓰지 않습니다.
+
+* * *
+
 ## 로컬 데이터 동기화 방식
 
 서비스가 시작되면 백엔드가 로컬 SQLite를 초기화하고 즉시 한 번 데이터를 동기화합니다. 시작 후에는 5초마다 백그라운드 동기화도 수행합니다.
@@ -575,6 +597,8 @@ cargo build --release --bin token-usage-insights
 | `MUSE_DIR` | `~/.local/share/muse` | Muse Code 데이터 디렉터리. `sessions`를 포함해야 함 |
 | `MCODE_DIR` | `~/.minimax/v2` | MiniMax Code 데이터 디렉터리. `sessions`를 포함해야 함 |
 | `MCODE_STATE_DB` | `~/.minimax/v2/sqlite/runtime-state.sqlite` | MiniMax Code runtime 데이터베이스(읽기 전용). 작업 디렉터리와 Session 이름 제공 |
+| `HERMES_DIR` | `~/.hermes` | 설정 상태에 표시할 Hermes Agent 데이터 디렉터리 |
+| `HERMES_STATE_DB` | `~/.hermes/state.db` | Hermes Agent 사용량 및 대화 데이터베이스(읽기 전용) |
 | `CORS_ALLOWED_ORIGINS` | `http://localhost:<PORT>,http://127.0.0.1:<PORT>` | 쉼표로 구분한 허용 CORS origin |
 
 ### 설정 파일 (config.yaml)

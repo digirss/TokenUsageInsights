@@ -615,6 +615,34 @@ pub(crate) fn resolve_session_file_path(
             resolve_pi_family_transcript_path(&db::get_mcode_dir(), "MiniMax Code", path)
                 .map_err(|error| SessionFileError::new(StatusCode::BAD_REQUEST, error))
         }
+        "hermes" => {
+            let path = transcript_path_db.ok_or_else(|| {
+                SessionFileError::new(StatusCode::NOT_FOUND, "找不到 Hermes Agent 資料庫路徑。")
+            })?;
+            // HERMES_STATE_DB may be independent of HERMES_DIR. Only the exact
+            // configured ledger is allowed, never an arbitrary local file.
+            let configured = db::get_hermes_state_db_path()
+                .canonicalize()
+                .map_err(|error| {
+                    SessionFileError::new(
+                        StatusCode::BAD_REQUEST,
+                        format!("無法存取 Hermes Agent 資料庫: {error}"),
+                    )
+                })?;
+            let candidate = StdPath::new(path).canonicalize().map_err(|error| {
+                SessionFileError::new(
+                    StatusCode::BAD_REQUEST,
+                    format!("無法解析 Hermes Agent 資料庫路徑: {error}"),
+                )
+            })?;
+            if candidate != configured || !candidate.is_file() {
+                return Err(SessionFileError::new(
+                    StatusCode::BAD_REQUEST,
+                    "Hermes Agent 會話路徑與已設定的資料庫不符。",
+                ));
+            }
+            Ok(candidate)
+        }
         _ => Err(SessionFileError::new(
             StatusCode::BAD_REQUEST,
             "不支援的助理類型",

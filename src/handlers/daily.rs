@@ -210,6 +210,8 @@ pub async fn get_setup_info(Path(assistant): Path<String>) -> impl IntoResponse 
 
     let mcode_dir = db::get_mcode_dir();
     let mcode_exists = mcode_dir.join("sessions").exists();
+    let hermes_dir = db::get_hermes_dir();
+    let hermes_state_db = db::get_hermes_state_db_path();
 
     Json(SetupInfoResponse {
         platform: std::env::consts::OS.to_string(),
@@ -313,6 +315,14 @@ pub async fn get_setup_info(Path(assistant): Path<String>) -> impl IntoResponse 
             dir_path: mcode_dir.to_string_lossy().into_owned(),
             data_path: mcode_dir.join("sessions").to_string_lossy().into_owned(),
             exists: mcode_exists,
+            script_path: "".to_string(),
+            source_script_path: "".to_string(),
+            settings_path: "".to_string(),
+        },
+        hermes: AssistantSetupStatus {
+            dir_path: hermes_dir.to_string_lossy().into_owned(),
+            data_path: hermes_state_db.to_string_lossy().into_owned(),
+            exists: hermes_state_db.is_file(),
             script_path: "".to_string(),
             source_script_path: "".to_string(),
             settings_path: "".to_string(),

@@ -58,8 +58,9 @@ http://localhost:3003
 | OMP | 不要 | `~/.omp/agent/sessions` | OMP が自動保存するローカル Session JSONL ファイルを直接スキャン |
 | Muse Code | 不要 | `~/.local/share/muse/sessions` | Muse Code が自動保存するローカル Session JSONL ファイルを直接スキャン |
 | MiniMax Code | 不要 | `~/.minimax/v2/sessions` | MiniMax Code が自動保存するローカル Session JSONL ファイルを直接スキャンし、作業ディレクトリと Session 名を読み取り専用で取得 |
+| Hermes Agent | 不要 | `~/.hermes/state.db` | cron・サブ Agent を含む Session のモデル使用量とメッセージを読み取り専用で取得 |
 
-**Copilot App、VS Code Copilot、Codex Desktop、Codex CLI、Claude Code、Cursor、Grok Build、Pi Coding Agent、OMP、Muse Code、MiniMax Code だけを使用する場合は、1 行のインストールコマンドを実行してダッシュボードを開くだけで利用できます。**
+**Copilot App、VS Code Copilot、Codex Desktop、Codex CLI、Claude Code、Cursor、Grok Build、Pi Coding Agent、OMP、Muse Code、MiniMax Code、Hermes Agent だけを使用する場合は、1 行のインストールコマンドを実行してダッシュボードを開くだけで利用できます。**
 
 ### Windows ネイティブでの利用
 
@@ -80,6 +81,7 @@ Windows ではデフォルトで次のネイティブパスを使用します：
 | OMP | `%USERPROFILE%\.omp` |
 | Muse Code | `%USERPROFILE%\.local\share\muse` |
 | MiniMax Code | `%USERPROFILE%\.minimax\v2` |
+| Hermes Agent | `%USERPROFILE%\.hermes` |
 
 ダッシュボードの設定ガイドは Windows で PowerShell のコピー、設定、診断コマンドを表示します。PowerShell collector は .NET JSON とファイル API を使用し、Bash、`jq`、`sed`、`awk` に依存しません。
 
@@ -481,6 +483,26 @@ MiniMax Code のローカルログには費用欄がないため、本ダッシ�
 
 * * *
 
+## Hermes Agent の設定
+
+**Hermes Agent に Hook、Status Line、追加スクリプトは不要です。** 次の SQLite を読み取り専用で参照します：
+
+```text
+~/.hermes/state.db
+```
+
+`session_model_usage` の各行は Session・モデル・プロバイダーごとの累計であり、返信ごとの Token ではありません。使用量のある cron・サブ Agent Session も取り込みます。入力 Token は別計上のキャッシュ Token を含みません。タイムラインはプロンプト、返信、ツール操作を表示しますが、Hermes は返信ごとの Token を保存しないため、返信単位の Token は表示しません。
+
+使用方法：
+
+1. Hermes Agent を通常どおり使用して使用量を記録します。
+2. ダッシュボードを起動または再読み込みします。
+3. Hermes Agent を選択し、同期ボタンを押すかバックグラウンド同期を待ちます。
+
+費用は正の実費を優先し、`estimated` と記録された正の見積額のみ次点で採用します。それ以外は `pricing.csv` で推定します。`HERMES_DIR` は表示上のデータディレクトリ、`HERMES_STATE_DB` は独立した DB パスを指定します。本プロジェクトは Hermes の `state.db` に書き込みません。
+
+* * *
+
 ## ローカルデータの同期方法
 
 サービス起動時にバックエンドがローカル SQLite を初期化し、直ちに 1 回同期します。起動後は 5 秒ごとにバックグラウンド同期も行います。
@@ -575,6 +597,8 @@ cargo build --release --bin token-usage-insights
 | `MUSE_DIR` | `~/.local/share/muse` | Muse Code データディレクトリ。`sessions` を含む必要があります |
 | `MCODE_DIR` | `~/.minimax/v2` | MiniMax Code データディレクトリ。`sessions` を含む必要があります |
 | `MCODE_STATE_DB` | `~/.minimax/v2/sqlite/runtime-state.sqlite` | MiniMax Code 実行期データベース（読み取り専用）。作業ディレクトリと Session 名を提供します |
+| `HERMES_DIR` | `~/.hermes` | 設定状態に表示する Hermes Agent のデータディレクトリ |
+| `HERMES_STATE_DB` | `~/.hermes/state.db` | Hermes Agent の使用量・会話データベース（読み取り専用） |
 | `CORS_ALLOWED_ORIGINS` | `http://localhost:<PORT>,http://127.0.0.1:<PORT>` | カンマ区切りの許可 CORS オリジン |
 
 ### 設定ファイル (config.yaml)
